@@ -58,6 +58,22 @@ const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
 
+// Hard cap on IPC message size to prevent oversized payloads from reaching the SDK.
+const IPC_MAX_TEXT_BYTES = 100_000; // 100 KB
+
+/**
+ * Validate and sanitize an IPC message text field.
+ * Returns the sanitized string, or null if the field is not a non-empty string.
+ */
+function sanitizeIpcText(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  if (raw.length > IPC_MAX_TEXT_BYTES) {
+    log(`IPC message truncated from ${raw.length} to ${IPC_MAX_TEXT_BYTES} bytes`);
+    return raw.slice(0, IPC_MAX_TEXT_BYTES);
+  }
+  return raw;
+}
+
 /**
  * Push-based async iterable for streaming user messages to the SDK.
  * Keeps the iterable alive until end() is called, preventing isSingleUserTurn.
@@ -286,8 +302,9 @@ function drainIpcInput(): string[] {
       try {
         const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         fs.unlinkSync(filePath);
-        if (data.type === 'message' && data.text) {
-          messages.push(data.text);
+        if (data.type === 'message') {
+          const text = sanitizeIpcText(data.text);
+          if (text !== null) messages.push(text);
         }
       } catch (err) {
         log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -410,8 +427,10 @@ async function runQuery(
         'mcp__nanoclaw__*'
       ],
       env: sdkEnv,
+      // bypassPermissions is required for autonomous agent operation.
+      // The container filesystem is the security boundary — the agent runs
+      // as a non-root user with only explicitly mounted paths accessible.
       permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
       mcpServers: {
         nanoclaw: {
